@@ -1,0 +1,5 @@
+firebase-admin
+functions-framework
+google-cloud-texttospeech
+replicate
+requests
