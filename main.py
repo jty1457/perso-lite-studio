@@ -13,8 +13,26 @@ try:
 except ValueError:
     firebase_admin.initialize_app()
 
-bucket = storage.bucket()  # 기본 Firebase Storage 버킷
-db = firestore.client()    # Firestore 클라이언트, 전역 또는 함수별로 초기화 가능
+# Lazy loading을 위해 클라이언트 초기화를 None으로 변경
+bucket = None  # 기본 Firebase Storage 버킷
+db = None    # Firestore 클라이언트, 전역 또는 함수별로 초기화 가능
+
+# --- Getter 함수 정의 ---
+def get_storage_bucket():
+    """Firebase Storage 버킷 클라이언트를 반환합니다 (필요시 초기화)."""
+    global bucket
+    if bucket is None:
+        print("Firebase Storage 버킷 클라이언트 초기화 중...")
+        bucket = storage.bucket()
+    return bucket
+
+def get_firestore_client():
+    """Firestore 클라이언트를 반환합니다 (필요시 초기화)."""
+    global db
+    if db is None:
+        print("Firestore 클라이언트 초기화 중...")
+        db = firestore.client()
+    return db
 
 # --- 헬퍼 함수 정의 ---
 
@@ -173,31 +191,34 @@ def generateAvatarVideo(request):
     final_video_storage_url = None
 
     try:
-        # --- 1단계: 아바타 이미지 다운로드 ---
+        # --- Step 1: Download Avatar Image ---
+        current_bucket_client = get_storage_bucket()
         avatar_storage_path = f"avatars/default/{avatar_id}" # .png로 가정, 필요한 경우 조정
-        download_avatar_image(bucket, avatar_storage_path, temp_avatar_path)
+        download_avatar_image(current_bucket_client, avatar_storage_path, temp_avatar_path)
 
-        # --- 2단계: TTS 오디오 생성 ---
+        # --- Step 2: Generate TTS Audio ---
         generate_tts_audio(script_text, tts_client, temp_audio_path)
 
-        # --- 3단계: 립싱크 수행 (Replicate 경유) ---
+        # --- Step 3: Perform Lip Sync (via Replicate) ---
         replicate_video_url = perform_lip_sync(replicate_client, temp_avatar_path, temp_audio_path)
         
-        # --- 4단계: Replicate에서 비디오 다운로드 ---
+        # --- Step 4: Download Video from Replicate ---
         download_replicate_video(replicate_video_url, temp_video_path)
 
-        # --- 5단계: 최종 비디오를 Firebase Storage에 업로드 ---
+        # --- Step 5: Upload Final Video to Firebase Storage ---
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_avatar_id = avatar_id.split('.')[0] # 확장자가 있는 경우 제거
         storage_video_filename = f"{timestamp}_{base_avatar_id}.mp4"
         final_storage_path = f"generated_videos/{user_id}/{storage_video_filename}"
         
-        final_video_storage_url = upload_to_firebase_storage(bucket, temp_video_path, final_storage_path)
+        # current_bucket_client는 이미 위에서 get_storage_bucket()으로 가져왔으므로 재사용
+        final_video_storage_url = upload_to_firebase_storage(current_bucket_client, temp_video_path, final_storage_path)
         if not final_video_storage_url: # 예외로 처리되어야 하지만 안전 장치로 사용합니다.
             raise OperationFailure("업로드 후 비디오 URL을 가져오는 데 실패했지만 예외는 발생하지 않았습니다.", 500)
 
-        # --- 6단계: Firestore에 메타데이터 저장 ---
-        save_metadata_to_firestore(db, user_id, final_video_storage_url, script_text, avatar_id)
+        # --- Step 6: Save Metadata to Firestore ---
+        current_db_client = get_firestore_client()
+        save_metadata_to_firestore(current_db_client, user_id, final_video_storage_url, script_text, avatar_id)
 
         print(f"비디오를 성공적으로 생성했습니다: {final_video_storage_url}")
         return {"message": "비디오가 성공적으로 생성되었습니다!", "video_url": final_video_storage_url}, 200
